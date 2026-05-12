@@ -442,7 +442,7 @@ const SUPA_URL='https://doommgfawoqiptgqadwd.supabase.co';
 const SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRvb21tZ2Zhd29xaXB0Z3FhZHdkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyODgzNTEsImV4cCI6MjA5MDg2NDM1MX0.EAUUhtPoGlqDQSLlABMwc5DptBI7T5HCkqCS-zW8kaQ';
 const {createClient}=supabase;
 const supa=createClient(SUPA_URL,SUPA_KEY);
-const MATERIALS=['Vinyl','Vinyl Perf','Leather','Leather Perf','Cloth','Alcantara','Other'];
+const MATERIALS=['Genuine Leather','Genuine Leather Perf','Vinyl','Vinyl Perf','Leather with Vinyl Perf','Alcantara','Cloth'];
 const VAR_GROUPS=[
   {id:'front',label:'Front',btns:[{id:'front_bottom',label:'Bottoms'},{id:'front_top',label:'Tops'}]},
   {id:'rear',label:'Rear',btns:[{id:'rear_bottom',label:'Bottoms'},{id:'rear_top',label:'Tops'}]},
@@ -458,7 +458,7 @@ const BRANDS_CONFIG=[
   {id:'dsa',    name:'DSA',                channels:[{id:'ebay',label:'eBay'},{id:'website',label:'Website'}]},
 ];
 const POSITIONS_PRICE=['1 Bottom','1 Top','2 Bottoms','1 Bottom & Top','2 Tops','Full Set','Other'];
-const MATERIALS_PRICE=['Genuine Leather','Leather Perf','Leatherette Perf','Leatherette','Vinyl','Alcantara','Cloth'];
+const MATERIALS_PRICE=['Genuine Leather','Genuine Leather Perf','Vinyl','Vinyl Perf','Leather with Vinyl Perf','Alcantara','Cloth'];
 const BRAND_DISCOUNTS={usasc:0.15,usan:0.05,diy:0.05,asf:0.05,master:0.05,premium:0.05,dsa:0.05};
 const PRICE_BRANDS=BRANDS_CONFIG.filter(b=>b.channels.some(c=>c.id==='ebay'));
 function naturalCents(base){
@@ -476,7 +476,7 @@ function naturalCents(base){
 }
 function calcPreDiscount(target,disc){if(!target||isNaN(target))return null;return naturalCents(target/(1-disc));}
 function fmtPrice(n){if(n===null||n===undefined)return'—';return'$'+n.toFixed(2);}
-let patterns=[],currentId=null,activeTab='info',unsaved=false,photoUploadType='product';
+let patterns=[],currentId=null,activeTab='overview',unsaved=false,photoUploadType='product';
 let currentUser=null,currentRole=null,currentProfile=null;
 let undoStack=[],redoStack=[],lastSnapshot='',snapshotTimer=null;
 const ROLE_LEVEL={admin:4,manager:3,editor:2,viewer:1};
@@ -611,7 +611,7 @@ async function loadAll(){
   const {data:photos}=await supa.from('pattern_photos').select('*').order('sort_order',{nullsFirst:true}).order('created_at');
   const {data:fits}=await supa.from('pattern_fits').select('*').order('created_at');
   patterns=(pats||[]).map(p=>({...p,
-    submodels:p.submodels||[],materials:p.materials||[],
+    submodels:p.submodels||[],materials:p.materials||[],materials_oem:p.materials_oem||[],
     positions:p.positions||{},other_positions:p.other_positions||[],
     channels:p.channels||{},pricing:p.pricing||{},
     colors:[],
@@ -683,7 +683,7 @@ async function selectPattern(id){
     if(!confirm('You have unsaved changes. Switch patterns anyway? Changes will be lost.'))return;
   }
   if(currentId&&currentId!==id)releaseLock(currentId);
-  currentId=id;activeTab='info';unsaved=false;undoStack=[];redoStack=[];
+  currentId=id;activeTab='overview';unsaved=false;undoStack=[];redoStack=[];
   buildSidebar();
   const p=getP();
   if(p){
@@ -732,8 +732,7 @@ function renderPattern(){
   const prod=(p.photos||[]).filter(ph=>ph.type==='product');
   const ba=(p.photos||[]).filter(ph=>ph.type==='before_after');
   const tabs=[
-    {id:'info',label:'Info'},
-    {id:'channels',label:'Channels &amp; Pricing'},
+    {id:'overview',label:'Overview'},
     {id:'photos',label:'Photos ('+prod.length+')'},
     {id:'before_after',label:'Before &amp; After ('+ba.length+')'},
     {id:'research',label:'Research'}
@@ -748,8 +747,7 @@ function renderPattern(){
     </div>
   </div><button class="btn btn-ghost btn-sm" id="edit-toggle-btn" onclick="toggleEditMode()">\u270e Edit</button></div>
   <div class="tabs">${tabs.map(t=>`<div class="tab ${activeTab===t.id?'active':''}" onclick="switchTab('${t.id}')">${t.label}</div>`).join('')}</div>`;
-  if(activeTab==='info')html+=renderInfoTab(p);
-  else if(activeTab==='channels')html+=renderChannelsTab(p);
+  if(activeTab==='overview')html+=renderOverviewTab(p);
   else if(activeTab==='photos')html+=buildPhotoTab('Product photos','prod-drop','product',prod);
   else if(activeTab==='before_after')html+=buildPhotoTab('Before &amp; After','ba-drop','before_after',ba);
   else if(activeTab==='research')html+=renderResearchTab(p);
@@ -768,64 +766,92 @@ function renderPattern(){
   const cb=document.getElementById('confirm-pattern-btn');
   if(cb){const ok=currentRole==='admin'||currentRole==='manager';cb.style.display=ok?'':'none';const confirmed=p.status==='confirmed';cb.textContent=confirmed?'\u2713 Confirmed':'\u2713 Confirm';cb.style.background=confirmed?'var(--green)':'';cb.style.color=confirmed?'#fff':'';cb.style.borderColor=confirmed?'var(--green)':'';cb.style.fontWeight=confirmed?'700':'';}
 }
-function renderChannelsTab(p){
+function renderChannelsSection(p){
   const ch=p.channels||{};
+  const activeMats=p.materials||[];
+  // Build material list with short keys for IDs
+  const matsForChannels=activeMats.map(function(m){return {label:m,key:m.replace(/[^a-z0-9]/gi,'_').toLowerCase()};});
   let html='<div class="sec" style="margin-bottom:16px">';
-  html+='<div class="sec-hdr"><span class="sec-title">Channels</span><span style="font-size:12px;color:var(--text3);margin-left:auto">Toggles save instantly</span></div>';
+  html+='<div class="sec-hdr"><span class="sec-title">Channels</span>';
+  if(!activeMats.length){
+    html+='<span style="font-size:12px;color:var(--text3);margin-left:auto">Toggle materials first</span>';
+  } else {
+    html+='<span style="font-size:12px;color:var(--text3);margin-left:auto">Tick which materials are listed on each channel</span>';
+  }
+  html+='</div>';
+  if(!activeMats.length){
+    html+='<div style="padding:20px;text-align:center;color:var(--text3);font-size:13px">No materials toggled on for this pattern yet.</div></div>';
+    return html;
+  }
   html+='<table class="ch-table"><thead><tr><th style="width:160px">Brand</th><th>eBay</th><th>Website</th></tr></thead><tbody>';
-  BRANDS_CONFIG.forEach(brand=>{
+  BRANDS_CONFIG.forEach(function(brand){
     html+='<tr><td>'+brand.name+'</td>';
-    ['ebay','website'].forEach(channel=>{
-      const hasChannel=brand.channels.some(c=>c.id===channel);
+    ['ebay','website'].forEach(function(channel){
+      const hasChannel=brand.channels.some(function(c){return c.id===channel;});
       if(!hasChannel){
         html+='<td><span class="ch-na">&mdash;</span></td>';
       } else {
-        const key=brand.id+'_'+channel;
-        const isOn=!!(ch[key]);
-        html+='<td><label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer"><button class="ch-toggle '+(isOn?'on':'')+'" onclick="toggleChannel(\''+key+'\',this)"></button><span style="font-size:13px;color:'+(isOn?'var(--green)':'var(--text3)')+'" id="chl_'+key+'">'+(isOn?'Listed':'Not listed')+'</span></label></td>';
+        const cellKey=brand.id+'_'+channel;
+        const cellData=ch[cellKey]||{};
+        const cellMats=cellData.materials||[];
+        html+='<td><div style="display:flex;flex-direction:column;gap:4px">';
+        matsForChannels.forEach(function(m){
+          const isChecked=cellMats.indexOf(m.label)>-1;
+          html+='<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:'+(isChecked?'var(--green)':'var(--text3)')+'">';
+          html+='<input type="checkbox" '+(isChecked?'checked':'')+' onchange="toggleChannelMaterial(\''+cellKey+'\',\''+m.label+'\',this.checked)" style="cursor:pointer;width:14px;height:14px">';
+          html+='<span>'+m.label+'</span>';
+          html+='</label>';
+        });
+        html+='</div></td>';
       }
     });
     html+='</tr>';
   });
   html+='</tbody></table></div>';
-  html+=renderPricingSection(p);
   return html;
 }
-async function toggleChannel(key,btn){if(!can('edit')){toast('View-only access','err');return;}
+async function toggleChannelMaterial(cellKey,materialLabel,isChecked){
+  if(!can('edit')){toast('View-only access','err');return;}
   const p=getP();if(!p)return;
   if(!p.channels)p.channels={};
-  p.channels[key]=!p.channels[key];
-  const isOn=p.channels[key];
-  btn.classList.toggle('on',isOn);
-  const labelEl=document.getElementById('chl_'+key);
-  if(labelEl){labelEl.textContent=isOn?'Listed':'Not listed';labelEl.style.color=isOn?'var(--green)':'var(--text3)';}
+  if(!p.channels[cellKey])p.channels[cellKey]={materials:[]};
+  if(!p.channels[cellKey].materials)p.channels[cellKey].materials=[];
+  const mats=p.channels[cellKey].materials;
+  const idx=mats.indexOf(materialLabel);
+  if(isChecked&&idx===-1)mats.push(materialLabel);
+  else if(!isChecked&&idx>-1)mats.splice(idx,1);
   await supa.from('patterns').update({channels:p.channels,updated_at:new Date().toISOString()}).eq('id',p.id);
-  toast(isOn?'Listed \u2713':'Removed');
+  // Update label color without re-rendering everything
+  toast(isChecked?'Added \u2713':'Removed');
+  renderPattern();
 }
 function renderPricingSection(p){
   const pricing=p.pricing||{};
+  const activeMats=(p.materials||[]);
   let html='<div class="sec"><div class="sec-hdr"><span class="sec-title">Pricing</span><span style="font-size:12px;color:var(--text3);margin-left:auto">Enter target \u2192 click any calculated price to copy it</span></div><div class="sec-body">';
-  html+='<div style="font-size:12px;color:var(--text3);margin-bottom:16px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);line-height:1.7"><strong style="color:var(--navy)">Target price</strong> = what you want to receive after the sale discount. The calculated pre-discount price is what you enter in the eBay listing. <strong style="color:var(--navy)">USASC: 15% off. All others: 5% off.</strong> Auto-Accept = target &minus;5%. Auto-Decline = target &minus;15%. <strong style="color:var(--navy)">Click any price to copy it.</strong></div>';
-  MATERIALS_PRICE.forEach(mat=>{
+  if(!activeMats.length){
+    html+='<div style="padding:20px;text-align:center;color:var(--text3);font-size:13px">Toggle materials on first to enter pricing.</div></div></div>';
+    return html;
+  }
+  html+='<div style="font-size:12px;color:var(--text3);margin-bottom:16px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);line-height:1.7"><strong style="color:var(--navy)">Target price</strong> = what you want to receive after the sale discount. The calculated pre-discount price is what you enter in the eBay listing. <strong style="color:var(--navy)">USASC: 15% off. All others: 5% off.</strong> Auto-Accept = target &minus;5%. Auto-Decline = target &minus;15%. <strong style="color:var(--navy)">Click any price to copy it.</strong> Untoggling a material hides its prices but does not delete them.</div>';
+  activeMats.forEach(function(mat){
     const matKey=mat.replace(/[^a-z0-9]/gi,'_').toLowerCase();
     html+='<div class="price-section"><div class="price-section-title">'+mat+'</div><table class="price-matrix"><thead><tr><th style="width:150px">Position set</th><th style="width:100px">Target $</th>';
-    [{label:'USASC',disc:0.15},{label:'Others',disc:0.05}].forEach(col=>{html+='<th>'+col.label+'<br><span style="font-weight:500;text-transform:none;letter-spacing:0;font-size:11px;color:var(--text2)">'+Math.round(col.disc*100)+'% off</span></th>';});
+    [{label:'USASC',disc:0.15},{label:'Others',disc:0.05}].forEach(function(col){html+='<th>'+col.label+'<br><span style="font-weight:500;text-transform:none;letter-spacing:0;font-size:11px;color:var(--text2)">'+Math.round(col.disc*100)+'% off</span></th>';});
     html+='<th>Auto-Accept<br><span style="font-weight:500;text-transform:none;letter-spacing:0;font-size:11px;color:var(--text2)">target &minus;5%</span></th>';
     html+='<th>Auto-Decline<br><span style="font-weight:500;text-transform:none;letter-spacing:0;font-size:11px;color:var(--text2)">target &minus;15%</span></th>';
     html+='</tr></thead><tbody>';
-    POSITIONS_PRICE.forEach(pos=>{
+    POSITIONS_PRICE.forEach(function(pos){
       const posKey=pos.replace(/[^a-z0-9]/gi,'_').toLowerCase();
       const priceKey=matKey+'__'+posKey;
       const target=(pricing[priceKey]&&pricing[priceKey]>0)?pricing[priceKey]:'';
       html+='<tr><td class="price-pos">'+pos+'</td><td><input class="price-input" type="number" min="0" step="0.01" placeholder="0.00" value="'+target+'" oninput="updatePricing(\''+priceKey+'\',this.value)" id="pi_'+priceKey+'"></td>';
-      [{id:'usasc',disc:0.15},{id:'others',disc:0.05}].forEach(col=>{
+      [{id:'usasc',disc:0.15},{id:'others',disc:0.05}].forEach(function(col){
         const calc=(target&&parseFloat(target)>0)?calcPreDiscount(parseFloat(target),col.disc):null;
         html+='<td><span class="price-calc" id="pc_'+col.id+'_'+priceKey+'" onclick="copyPrice(this,\''+col.id+'\',\''+priceKey+'\',\''+col.disc+'\')">'+(calc?fmtPrice(calc):'<span class="price-na">&mdash;</span>')+'</span></td>';
       });
-      // Auto-Accept: target * 0.95
       const aa=(target&&parseFloat(target)>0)?naturalCents(parseFloat(target)*0.95):null;
       html+='<td><span class="price-calc" id="pc_aa_'+priceKey+'" onclick="copyDirect(this,\'aa\',\''+priceKey+'\',0.95)">'+(aa?fmtPrice(aa):'<span class="price-na">&mdash;</span>')+'</span></td>';
-      // Auto-Decline: target * 0.85
       const ad=(target&&parseFloat(target)>0)?naturalCents(parseFloat(target)*0.85):null;
       html+='<td><span class="price-calc" id="pc_ad_'+priceKey+'" onclick="copyDirect(this,\'ad\',\''+priceKey+'\',0.85)">'+(ad?fmtPrice(ad):'<span class="price-na">&mdash;</span>')+'</span></td>';
       html+='</tr>';
@@ -879,9 +905,10 @@ async function savePricing(){
   if(error){toast('Save failed: '+error.message,'err');return;}
   toast('Pricing saved \u2713');
 }
-function renderInfoTab(p){
+function renderOverviewTab(p){
   const canEdit=can('edit');
   let html='<div class="info-grid">';
+  // ── VARIATIONS ─────────────────────────────────────────
   html+='<div class="sec"><div class="sec-hdr"><span class="sec-title">Variations</span></div>';
   VAR_GROUPS.forEach(function(g){
     const thumb=p.positions[g.id+'_thumb']||'';
@@ -925,18 +952,26 @@ function renderInfoTab(p){
   });
   if(canEdit)html+='<button class="btn-add-other" onclick="addOtherVar()">+ Add other variation</button>';
   html+='</div>';
+  // ── MATERIALS (with OEM checkboxes) ────────────────────
   const mats=p.materials||[];
-  const stdMats=MATERIALS.slice(0,-1);
-  const otherCustom=mats.find(function(m){return !stdMats.includes(m)&&m!=='Other';})||'';
-  const hasOther=mats.includes('Other')||!!otherCustom;
-  html+='<div class="sec"><div class="sec-hdr"><span class="sec-title">Materials</span></div><div class="sec-body"><div class="toggle-group">';
-  stdMats.forEach(function(m){
-    html+='<button class="tog-btn '+(mats.includes(m)?'on':'')+'" onclick="toggleMaterial(\''+m+'\')">'+m+'</button>';
+  const oemList=p.materials_oem||[];
+  html+='<div class="sec"><div class="sec-hdr"><span class="sec-title">Materials</span><span style="font-size:11px;color:var(--text3);margin-left:auto">Check OEM where applicable</span></div><div class="sec-body">';
+  html+='<div style="display:flex;flex-direction:column;gap:6px">';
+  MATERIALS.forEach(function(m){
+    const isOn=mats.includes(m);
+    const isOem=oemList.includes(m);
+    html+='<div style="display:flex;align-items:center;gap:10px;padding:6px 0">';
+    html+='<button class="tog-btn '+(isOn?'on':'')+'" style="min-width:200px;text-align:left" onclick="toggleMaterial(\''+m+'\')">'+m+'</button>';
+    if(isOn){
+      html+='<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text2)">';
+      html+='<input type="checkbox" '+(isOem?'checked':'')+' onchange="toggleOemMaterial(\''+m+'\')" style="cursor:pointer;width:16px;height:16px">';
+      html+='<span style="font-weight:600;color:'+(isOem?'var(--green)':'var(--text3)')+';text-transform:uppercase;letter-spacing:0.05em;font-size:11px">OEM</span>';
+      html+='</label>';
+    }
+    html+='</div>';
   });
-  html+='<button class="tog-btn '+(hasOther?'on':'')+'" onclick="toggleMaterial(\'Other\')">'+(otherCustom||'Other')+'</button>';
-  html+='</div>';
-  if(hasOther)html+='<div style="margin-top:10px;display:flex;align-items:center;gap:8px"><span style="font-size:13px;color:var(--text2)">Specify:</span><input style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-family:var(--font);font-size:13px;color:var(--navy);outline:none" placeholder="e.g. Neoprene..." value="'+esc(otherCustom)+'" oninput="setOtherMaterial(this.value)"></div>';
-  html+='</div></div>';
+  html+='</div></div></div>';
+  // ── COLORS ─────────────────────────────────────────────
   html+='<div class="sec"><div class="sec-hdr"><span class="sec-title">Colors</span>';
   if(canEdit)html+='<button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="openColorModal()">+ Add</button>';
   html+='</div>';
@@ -962,6 +997,7 @@ function renderInfoTab(p){
     html+='<div style="padding:20px;text-align:center;color:var(--text3);font-size:14px">No colors yet.</div>';
   }
   html+='</div>';
+  // ── RIGHT COLUMN: Submodels + Notes ──────────────────────
   html+='<div style="display:flex;flex-direction:column;gap:16px">';
   html+='<div class="sec"><div class="sec-hdr"><span class="sec-title">Submodels / Trims</span>';
   if(canEdit)html+='<button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="addSubmodel()">+ Add</button>';
@@ -980,11 +1016,19 @@ function renderInfoTab(p){
   html+='</div>';
   html+='<div class="sec"><div class="sec-hdr"><span class="sec-title">Additional notes</span></div><div class="sec-body"><textarea class="notes-textarea" id="ta-notes" placeholder="Fitment warnings, installation notes..." oninput="markDirty()">'+esc(p.notes||'')+'</textarea></div></div>';
   html+='</div></div>';
+  // Confirmed banner
   if(p.status==='confirmed'&&p.confirmed_at){
     const when=new Date(p.confirmed_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
     html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--green-bg);border:1px solid var(--green-border);border-radius:var(--radius);margin-bottom:10px;font-size:13px;color:var(--green)"><span style="font-weight:700">&#10003; Confirmed</span><span style="opacity:0.7">'+when+'</span></div>';
   }
+  // Also fits
   html+=renderAlsoFits(p);
+  // ── CHANNELS (inline) ─────────────────────────────────
+  html+='<div style="margin-top:24px"></div>';
+  html+=renderChannelsSection(p);
+  // ── PRICING (inline) ──────────────────────────────────
+  html+='<div style="margin-top:16px"></div>';
+  html+=renderPricingSection(p);
   return html;
 }
 // ── RESEARCH TAB ─────────────────────────────────────────
@@ -1135,7 +1179,39 @@ function updateOtherLabel(i,v){const p=getP();p.other_positions[i].label=v;markD
 function addOtherVar(){if(!can('edit')){toast('View-only access','err');return;}const p=getP();p.other_positions.push({label:'',active:true,thumb:''});markDirty();renderPattern();}
 function removeOtherVar(i){const p=getP();p.other_positions.splice(i,1);markDirty();renderPattern();}
 function setOtherMaterial(val){const p=getP();const s=MATERIALS.slice(0,-1);p.materials=p.materials.filter(m=>s.includes(m)||m==='Other');if(val.trim())p.materials.push(val.trim());markDirty();}
-async function toggleMaterial(mat){if(!can('edit')){toast('View-only access','err');return;}const p=getP();const s=MATERIALS.slice(0,-1);if(mat==='Other'){const h=p.materials.some(m=>!s.includes(m));if(h)p.materials=p.materials.filter(m=>s.includes(m));else p.materials.push('Other');}else{const idx=p.materials.indexOf(mat);if(idx>-1)p.materials.splice(idx,1);else p.materials.push(mat);}await supa.from('patterns').update({materials:p.materials,updated_at:new Date().toISOString()}).eq('id',p.id);renderPattern();toast('Saved \u2713');}
+async function toggleMaterial(mat){
+  if(!can('edit')){toast('View-only access','err');return;}
+  const p=getP();
+  const idx=p.materials.indexOf(mat);
+  if(idx>-1){
+    // Untoggling — remove from materials AND oem list, but KEEP pricing in DB
+    p.materials.splice(idx,1);
+    if(p.materials_oem)p.materials_oem=p.materials_oem.filter(m=>m!==mat);
+  } else {
+    // Toggling on — ask if OEM
+    p.materials.push(mat);
+    if(!p.materials_oem)p.materials_oem=[];
+    // If this is the first material, auto-OEM. Otherwise ask.
+    if(p.materials.length===1){
+      p.materials_oem.push(mat);
+    } else {
+      const isOem=confirm('Is "'+mat+'" the OEM (original) material for this pattern?');
+      if(isOem)p.materials_oem.push(mat);
+    }
+  }
+  await supa.from('patterns').update({materials:p.materials,materials_oem:p.materials_oem||[],updated_at:new Date().toISOString()}).eq('id',p.id);
+  renderPattern();toast('Saved \u2713');
+}
+async function toggleOemMaterial(mat){
+  if(!can('edit')){toast('View-only access','err');return;}
+  const p=getP();
+  if(!p.materials_oem)p.materials_oem=[];
+  const idx=p.materials_oem.indexOf(mat);
+  if(idx>-1)p.materials_oem.splice(idx,1);
+  else p.materials_oem.push(mat);
+  await supa.from('patterns').update({materials_oem:p.materials_oem,updated_at:new Date().toISOString()}).eq('id',p.id);
+  renderPattern();toast('OEM updated \u2713');
+}
 function addSubmodel(){if(!can('edit')){toast('View-only access','err');return;}const p=getP();p.submodels.push({name:'',years:'All years'});markDirty();renderPattern();}
 function updateSubmodel(i,field,val){const p=getP();if(typeof p.submodels[i]==='string')p.submodels[i]={name:p.submodels[i],years:'All years'};p.submodels[i][field]=val;markDirty();}
 function removeSubmodel(i){const p=getP();p.submodels.splice(i,1);markDirty();renderPattern();}
@@ -1360,10 +1436,10 @@ async function addPattern(){
   if(!brand||!model||!years){alert('Brand, Model and Years are required.');return;}
   const btn=document.getElementById('add-confirm-btn');btn.disabled=true;btn.textContent='Adding...';
   const defPos={front_bottom:false,front_top:false,rear_bottom:false,rear_top:false};
-  const {data,error}=await supa.from('patterns').insert({brand,model,years,trim,research:'',notes:'',submodels:[],materials:[],positions:defPos,other_positions:[],channels:{},pricing:{}}).select().single();
+  const {data,error}=await supa.from('patterns').insert({brand,model,years,trim,research:'',notes:'',submodels:[],materials:[],materials_oem:[],positions:defPos,other_positions:[],channels:{},pricing:{}}).select().single();
   btn.disabled=false;btn.textContent='Add Pattern';
   if(error){toast('Error: '+error.message,'err');return;}
-  const full={...data,colors:[],pdfs:[],photos:[],fits:[],submodels:[],materials:[],positions:defPos,other_positions:[],channels:{},pricing:{}};
+  const full={...data,colors:[],pdfs:[],photos:[],fits:[],submodels:[],materials:[],materials_oem:[],positions:defPos,other_positions:[],channels:{},pricing:{}};
   patterns.push(full);patterns.sort((a,b)=>a.brand.localeCompare(b.brand)||a.model.localeCompare(b.model));
   document.getElementById('brand-dl').innerHTML=[...new Set(patterns.map(p=>p.brand))].sort().map(b=>`<option value="${b}">`).join('');
   closeAddModal();['nm-brand','nm-model','nm-years','nm-trim'].forEach(id=>document.getElementById(id).value='');
