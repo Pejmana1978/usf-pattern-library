@@ -482,6 +482,9 @@ let undoStack=[],redoStack=[],lastSnapshot='',snapshotTimer=null;
 const ROLE_LEVEL={admin:4,manager:3,editor:2,viewer:1};
 function can(action){
   if(!currentRole)return false;
+  // View-only mode (lock held by another user on the currently selected pattern)
+  // blocks edit/delete actions only — manage_users remains a global role check.
+  if(viewOnlyMode&&currentId&&(action==='edit'||action==='delete'))return false;
   if(action==='manage_users')return ROLE_LEVEL[currentRole]>=3;
   if(action==='delete')return ROLE_LEVEL[currentRole]>=2;
   if(action==='edit')return ROLE_LEVEL[currentRole]>=2;
@@ -692,41 +695,108 @@ async function selectPattern(id){
     if(freshPhotos)p.photos=freshPhotos;
     const {data:freshPdfs}=await supa.from('pattern_pdfs').select('*').eq('pattern_id',id).order('created_at');
     if(freshPdfs)p.pdfs=freshPdfs;
+    // CRITICAL: read lock state fresh from DB before deciding view/edit mode
+    const {data:freshLock}=await supa.from('patterns').select('locked_by,locked_at').eq('id',id).single();
+    if(freshLock){p.locked_by=freshLock.locked_by;p.locked_at=freshLock.locked_at;}
   }
+  // Try to acquire lock (this checks staleness internally)
+  await acquireLock(id);
   renderPattern();document.getElementById('hdr-actions').style.display='flex';setStatus('');
   setTimeout(snapshot,100);
   const cb=document.getElementById('confirm-pattern-btn');
   if(cb&&(currentRole==='admin'||currentRole==='manager'))cb.style.display='';
-  acquireLock(id);
 }
+
+// Lock stale threshold: 2 minutes since last heartbeat
+const LOCK_STALE_MS=2*60*1000;
+let lockHeartbeatTimer=null;
+let viewOnlyMode=false;
+
+function isLockedByOther(p){
+  if(!p||!p.locked_by||!p.locked_at)return false;
+  if(p.locked_by===currentUser?.id)return false;
+  const age=Date.now()-new Date(p.locked_at).getTime();
+  return age<LOCK_STALE_MS;
+}
+
 async function acquireLock(patternId){
-  if(!can('edit')||!currentUser)return;
-  await supa.from('patterns').update({locked_by:currentUser.id,locked_at:new Date().toISOString()}).eq('id',patternId);
+  // Don't try to lock if user role can't edit at all (viewers).
+  // Use raw role check, NOT can('edit'), to avoid circular dependency on viewOnlyMode.
+  if(!currentRole||ROLE_LEVEL[currentRole]<2||!currentUser){viewOnlyMode=true;return;}
   const p=patterns.find(x=>x.id===patternId);
-  if(p){p.locked_by=currentUser.id;p.locked_at=new Date().toISOString();}
+  if(!p){viewOnlyMode=true;return;}
+  // If locked by another user (fresh, not stale), enter view-only mode
+  if(isLockedByOther(p)){
+    viewOnlyMode=true;
+    if(lockHeartbeatTimer){clearInterval(lockHeartbeatTimer);lockHeartbeatTimer=null;}
+    return;
+  }
+  // Otherwise acquire/refresh the lock
+  viewOnlyMode=false;
+  const nowIso=new Date().toISOString();
+  await supa.from('patterns').update({locked_by:currentUser.id,locked_at:nowIso}).eq('id',patternId);
+  p.locked_by=currentUser.id;p.locked_at=nowIso;
+  // Start heartbeat to keep lock alive
+  if(lockHeartbeatTimer)clearInterval(lockHeartbeatTimer);
+  lockHeartbeatTimer=setInterval(()=>refreshLockHeartbeat(patternId),30000);
 }
+
+async function refreshLockHeartbeat(patternId){
+  if(!currentUser||viewOnlyMode)return;
+  const p=patterns.find(x=>x.id===patternId);
+  if(!p||p.id!==currentId)return;
+  const nowIso=new Date().toISOString();
+  await supa.from('patterns').update({locked_at:nowIso}).eq('id',patternId).eq('locked_by',currentUser.id);
+  p.locked_at=nowIso;
+}
+
 async function releaseLock(patternId){
-  if(!patternId||!can('edit')||!currentUser)return;
+  if(!patternId||!currentUser)return;
+  if(lockHeartbeatTimer){clearInterval(lockHeartbeatTimer);lockHeartbeatTimer=null;}
   const p=patterns.find(x=>x.id===patternId);
   if(p&&p.locked_by===currentUser.id){
-    await supa.from('patterns').update({locked_by:null,locked_at:null}).eq('id',patternId);
+    await supa.from('patterns').update({locked_by:null,locked_at:null}).eq('id',patternId).eq('locked_by',currentUser.id);
     p.locked_by=null;p.locked_at=null;
   }
 }
+
+// Poll for lock state every 20s — if someone takes over, switch to view-only.
+// If I'm in view-only and the other user has gone (lock cleared/stale), upgrade to editor.
+async function pollLockState(){
+  if(!currentId||!currentUser)return;
+  const {data}=await supa.from('patterns').select('locked_by,locked_at').eq('id',currentId).single();
+  if(!data)return;
+  const p=getP();if(!p)return;
+  p.locked_by=data.locked_by;p.locked_at=data.locked_at;
+  const otherHoldsLock=isLockedByOther(p);
+  // If we thought we had the lock but someone else now has it, demote.
+  if(otherHoldsLock&&!viewOnlyMode){
+    viewOnlyMode=true;
+    if(lockHeartbeatTimer){clearInterval(lockHeartbeatTimer);lockHeartbeatTimer=null;}
+    toast('Another user has taken edit access','err');
+    renderPattern();
+    return;
+  }
+  // If we're in view-only and the lock is now free (cleared or stale), try to acquire.
+  if(!otherHoldsLock&&viewOnlyMode){
+    await acquireLock(currentId);
+    renderPattern();
+    toast('Edit access acquired \u2713');
+  }
+}
+setInterval(pollLockState,20000);
 function getP(){return patterns.find(p=>p.id===currentId);}
 function renderPattern(){
   const p=getP();if(!p)return;
   const existingBanner=document.getElementById('lock-banner');
   if(existingBanner)existingBanner.remove();
-  if(p.locked_by&&p.locked_by!==currentUser?.id&&p.locked_at){
-    const lockedMinsAgo=(Date.now()-new Date(p.locked_at).getTime())/60000;
-    if(lockedMinsAgo<5){
-      const banner=document.createElement('div');
-      banner.id='lock-banner';
-      banner.style.cssText='position:fixed;top:0;left:264px;right:0;background:#C9B27E;color:#17183B;text-align:center;padding:9px;font-size:13px;font-weight:600;z-index:300;';
-      banner.textContent='\u26a0\ufe0f Another user is currently editing this pattern. Your saves may conflict with theirs.';
-      document.body.appendChild(banner);
-    }
+  // Show locked banner if another user holds the lock
+  if(viewOnlyMode&&isLockedByOther(p)){
+    const banner=document.createElement('div');
+    banner.id='lock-banner';
+    banner.style.cssText='position:fixed;top:0;left:264px;right:0;background:#AF0129;color:#fff;text-align:center;padding:10px;font-size:13px;font-weight:600;z-index:300;box-shadow:0 2px 8px rgba(0,0,0,0.15)';
+    banner.innerHTML='\ud83d\udd12 This pattern is locked by another user. You can view but not edit. (Will be released after 2 minutes of inactivity.)';
+    document.body.appendChild(banner);
   }
   document.getElementById('breadcrumb').innerHTML=`<span style="color:var(--text3)">${p.brand}</span><span class="bcs"> &rsaquo; </span><span style="font-weight:500">${p.model} ${p.years}${p.trim?' &middot; '+p.trim:''}</span>`;
   const prod=(p.photos||[]).filter(ph=>ph.type==='product');
@@ -1467,7 +1537,7 @@ function exportResearchPdf(){
       .replace(/(https?:\/\/[^\s<&]+)/g,'<span style="color:#555;word-break:break-all">$1</span>');
   }
 
-  // FIX 1: Sort research photos by sort_order (same order as displayed in app)
+  // Sort research photos by sort_order (same order as displayed in app)
   const researchPhotos=(p.photos||[])
     .filter(function(ph){return ph.type==='research';})
     .slice()
@@ -1478,10 +1548,11 @@ function exportResearchPdf(){
     });
 
   const notes=p.research||'';
-  const colors=(p.colors||[]).map(function(c){return c.name;}).join(', ')||'—';
+  const mats=p.materials||[];
+  const oemList=p.materials_oem||[];
+  const subs=p.submodels||[];
 
-  // FIX 2: Build image cells — page-break-inside:avoid keeps caption with image
-  // FIX 3: fmtCaption handles \n → <br>
+  // Build image cells — page-break-inside:avoid keeps caption with image
   var imgRows='';
   for(var i=0;i<researchPhotos.length;i+=2){
     var a=researchPhotos[i],b=researchPhotos[i+1];
@@ -1500,6 +1571,17 @@ function exportResearchPdf(){
     imgRows+='</tr>';
   }
 
+  // Build variations summary (active position buttons + other variations)
+  const variationLabels=[];
+  VAR_GROUPS.forEach(function(g){
+    g.btns.forEach(function(b){
+      if(p.positions&&p.positions[b.id])variationLabels.push(g.label+' '+b.label);
+    });
+  });
+  (p.other_positions||[]).forEach(function(op){
+    if(op.active&&op.label&&op.label.trim())variationLabels.push(op.label.trim());
+  });
+
   var html='<!DOCTYPE html><html><head><meta charset="UTF-8">';
   html+='<title>Research \u2014 '+escHtml(p.brand)+' '+escHtml(p.model)+' '+escHtml(p.years)+'</title>';
   html+='<style>';
@@ -1508,35 +1590,96 @@ function exportResearchPdf(){
   html+='h1{font-size:20px;font-weight:700;margin-bottom:4px}';
   html+='.meta{font-size:12px;color:#666;margin-bottom:24px;padding-bottom:14px;border-bottom:2px solid #eee}';
   html+='.section-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#888;margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid #eee}';
-  html+='.section{margin-bottom:28px}';
+  html+='.section{margin-bottom:24px;page-break-inside:avoid}';
   html+='.info-row{display:flex;gap:24px;margin-bottom:6px}';
-  html+='.info-label{font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.05em;min-width:60px}';
+  html+='.info-label{font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.05em;min-width:90px}';
   html+='.info-val{font-size:13px;color:#1a1a1a}';
+  html+='.mat-list{display:flex;flex-wrap:wrap;gap:6px}';
+  html+='.mat-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#f3f1ec;border:1px solid #e0ddd8;border-radius:14px;font-size:12px;font-weight:500}';
+  html+='.oem-badge{display:inline-block;padding:1px 6px;background:#1a6e42;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;border-radius:3px}';
+  html+='.colors-table{width:100%;border-collapse:collapse;font-size:12px}';
+  html+='.colors-table th{text-align:left;padding:6px 10px;background:#f9f8f6;border-bottom:2px solid #e0ddd8;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#666}';
+  html+='.colors-table td{padding:6px 10px;border-bottom:1px solid #eee;vertical-align:top}';
+  html+='.colors-table tr:last-child td{border-bottom:none}';
+  html+='.var-list{display:flex;flex-wrap:wrap;gap:6px}';
+  html+='.var-chip{display:inline-block;padding:4px 10px;background:#eef0f6;border:1px solid #dde0ec;border-radius:14px;font-size:12px;font-weight:500;color:#17183B}';
+  html+='.sub-row{display:flex;gap:16px;padding:5px 0;border-bottom:1px solid #eee;font-size:12px}';
+  html+='.sub-row:last-child{border-bottom:none}';
+  html+='.sub-name{font-weight:600;min-width:160px}';
+  html+='.sub-years{color:#888}';
   html+='.notes{font-size:13px;line-height:1.75;color:#333;white-space:pre-wrap;background:#f9f9f7;border:1px solid #eee;border-radius:6px;padding:14px}';
-  html+='table{width:100%;border-collapse:collapse}';
+  html+='table.imgs{width:100%;border-collapse:collapse}';
   html+='@media print{body{padding:16px}@page{margin:16mm}}';
   html+='</style></head><body>';
 
-  // Header
+  // ── Header ──
   html+='<h1>'+escHtml(p.brand)+' '+escHtml(p.model)+' '+escHtml(p.years)+(p.trim?' &middot; '+escHtml(p.trim):'')+' &mdash; Research</h1>';
   html+='<div class="meta">Generated '+new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})+'</div>';
 
-  // Pattern info
+  // ── Pattern info (basic) ──
   html+='<div class="section"><div class="section-title">Pattern info</div>';
   html+='<div class="info-row"><span class="info-label">Brand</span><span class="info-val">'+escHtml(p.brand)+'</span></div>';
   html+='<div class="info-row"><span class="info-label">Model</span><span class="info-val">'+escHtml(p.model)+'</span></div>';
   html+='<div class="info-row"><span class="info-label">Years</span><span class="info-val">'+escHtml(p.years)+'</span></div>';
   if(p.trim)html+='<div class="info-row"><span class="info-label">Trim</span><span class="info-val">'+escHtml(p.trim)+'</span></div>';
-  html+='<div class="info-row"><span class="info-label">Colors</span><span class="info-val">'+escHtml(colors)+'</span></div>';
   html+='</div>';
 
-  // Reference images
-  if(researchPhotos.length){
-    html+='<div class="section"><div class="section-title">Reference images ('+researchPhotos.length+')</div>';
-    html+='<table>'+imgRows+'</table></div>';
+  // ── Materials with OEM badges ──
+  if(mats.length){
+    html+='<div class="section"><div class="section-title">Materials</div>';
+    html+='<div class="mat-list">';
+    mats.forEach(function(m){
+      const isOem=oemList.indexOf(m)>-1;
+      html+='<span class="mat-chip">'+escHtml(m);
+      if(isOem)html+=' <span class="oem-badge">OEM</span>';
+      html+='</span>';
+    });
+    html+='</div></div>';
   }
 
-  // Notes
+  // ── Variations ──
+  if(variationLabels.length){
+    html+='<div class="section"><div class="section-title">Variations</div>';
+    html+='<div class="var-list">';
+    variationLabels.forEach(function(v){html+='<span class="var-chip">'+escHtml(v)+'</span>';});
+    html+='</div></div>';
+  }
+
+  // ── Colors as a table ──
+  if((p.colors||[]).length){
+    const sortedColors=[...p.colors].sort(function(a,b){return (a.name||'').localeCompare(b.name||'');});
+    html+='<div class="section"><div class="section-title">Colors ('+sortedColors.length+')</div>';
+    html+='<table class="colors-table"><thead><tr><th>Color name</th><th>Trim code</th><th>Year note</th><th>Material exception</th></tr></thead><tbody>';
+    sortedColors.forEach(function(c){
+      html+='<tr>';
+      html+='<td style="font-weight:600">'+escHtml(c.name||'')+'</td>';
+      html+='<td style="font-family:monospace">'+escHtml(c.code||'\u2014')+'</td>';
+      html+='<td>'+escHtml(c.year_note||'All years')+'</td>';
+      html+='<td style="color:#666">'+escHtml(c.note||'')+'</td>';
+      html+='</tr>';
+    });
+    html+='</tbody></table></div>';
+  }
+
+  // ── Submodels / Trims ──
+  if(subs.length){
+    html+='<div class="section"><div class="section-title">Submodels / Trims</div>';
+    subs.forEach(function(s){
+      const name=typeof s==='string'?s:(s.name||'');
+      const years=typeof s==='string'?'All years':(s.years||'All years');
+      if(!name)return;
+      html+='<div class="sub-row"><span class="sub-name">'+escHtml(name)+'</span><span class="sub-years">'+escHtml(years)+'</span></div>';
+    });
+    html+='</div>';
+  }
+
+  // ── Reference images ──
+  if(researchPhotos.length){
+    html+='<div class="section" style="page-break-inside:auto"><div class="section-title">Reference images ('+researchPhotos.length+')</div>';
+    html+='<table class="imgs">'+imgRows+'</table></div>';
+  }
+
+  // ── Research notes ──
   if(notes.trim()){
     html+='<div class="section"><div class="section-title">Research notes</div>';
     html+='<div class="notes">'+escHtml(notes)+'</div></div>';
@@ -1546,7 +1689,7 @@ function exportResearchPdf(){
 
   // Open print window
   var win=window.open('','_blank','width=900,height=700');
-  if(!win){toast('Pop-up blocked — please allow pop-ups for this site','err');return;}
+  if(!win){toast('Pop-up blocked \u2014 please allow pop-ups for this site','err');return;}
   win.document.write(html);
   win.document.close();
   win.onload=function(){
