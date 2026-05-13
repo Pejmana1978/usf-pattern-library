@@ -288,9 +288,86 @@ input[type=color]{width:100%;height:40px;border-radius:var(--radius);border:1px 
       <div class="modal-title" style="margin-bottom:0;flex:1">User Management</div>
       <button class="btn btn-navy btn-sm" id="add-user-btn" onclick="showAddUser()">+ Add User</button>
     </div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:16px;line-height:1.6;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px">
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.6;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px">
       Create users directly from here. They can log in immediately with the email and password you set, and change their password after first login.
     </div>
+    <details id="role-perms-details" style="margin-bottom:16px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius)">
+      <summary style="cursor:pointer;padding:10px 14px;font-size:12px;font-weight:600;color:var(--navy);user-select:none;list-style:none">
+        <span class="role-chev" style="display:inline-block;margin-right:6px;transition:transform 0.15s">&#9654;</span> What can each role do?
+      </summary>
+      <style>#role-perms-details[open] .role-chev{transform:rotate(90deg)}#role-perms-details summary::-webkit-details-marker{display:none}</style>
+      <div style="padding:0 14px 14px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:4px">
+          <thead>
+            <tr style="border-bottom:2px solid var(--border)">
+              <th style="text-align:left;padding:8px 10px;font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Action</th>
+              <th style="text-align:center;padding:8px 10px;font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Viewer</th>
+              <th style="text-align:center;padding:8px 10px;font-size:10px;font-weight:700;color:var(--green);text-transform:uppercase;letter-spacing:0.05em">Editor</th>
+              <th style="text-align:center;padding:8px 10px;font-size:10px;font-weight:700;color:var(--gold2);text-transform:uppercase;letter-spacing:0.05em">Manager</th>
+              <th style="text-align:center;padding:8px 10px;font-size:10px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:0.05em">Admin</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:7px 10px">View patterns &amp; pricing</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:7px 10px">Export PDFs</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:7px 10px">Add, edit &amp; delete patterns</td>
+              <td style="text-align:center;color:var(--border2);font-weight:700">&mdash;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:7px 10px">Upload photos &amp; documents</td>
+              <td style="text-align:center;color:var(--border2);font-weight:700">&mdash;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:7px 10px">Edit pricing &amp; channels</td>
+              <td style="text-align:center;color:var(--border2);font-weight:700">&mdash;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:7px 10px">Confirm patterns (mark as reviewed)</td>
+              <td style="text-align:center;color:var(--border2);font-weight:700">&mdash;</td>
+              <td style="text-align:center;color:var(--border2);font-weight:700">&mdash;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:7px 10px">Manage users (add, change role)</td>
+              <td style="text-align:center;color:var(--border2);font-weight:700">&mdash;</td>
+              <td style="text-align:center;color:var(--border2);font-weight:700">&mdash;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+            </tr>
+            <tr>
+              <td style="padding:7px 10px">Promote users to admin</td>
+              <td style="text-align:center;color:var(--border2);font-weight:700">&mdash;</td>
+              <td style="text-align:center;color:var(--border2);font-weight:700">&mdash;</td>
+              <td style="text-align:center;color:var(--border2);font-weight:700">&mdash;</td>
+              <td style="text-align:center;color:var(--green);font-weight:700">&#10003;</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
     <div id="users-list"><div style="color:var(--text3);font-size:13px;padding:8px 0">Loading...</div></div>
     <div id="add-user-form" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
       <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:14px">Create new user</div>
