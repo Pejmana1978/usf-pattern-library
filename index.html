@@ -555,6 +555,7 @@ function calcPreDiscount(target,disc){if(!target||isNaN(target))return null;retu
 function fmtPrice(n){if(n===null||n===undefined)return'—';return'$'+n.toFixed(2);}
 let patterns=[],currentId=null,activeTab='overview',unsaved=false,photoUploadType='product';
 let currentUser=null,currentRole=null,currentProfile=null;
+let userMap={}; // id -> full_name (or email) for "Created by" display
 let undoStack=[],redoStack=[],lastSnapshot='',snapshotTimer=null;
 const ROLE_LEVEL={admin:4,manager:3,editor:2,viewer:1};
 function can(action){
@@ -563,11 +564,21 @@ function can(action){
   // blocks edit/delete actions only — manage_users remains a global role check.
   if(viewOnlyMode&&currentId&&(action==='edit'||action==='delete'))return false;
   if(action==='manage_users')return ROLE_LEVEL[currentRole]>=3;
-  if(action==='delete')return ROLE_LEVEL[currentRole]>=2;
-  if(action==='edit')return ROLE_LEVEL[currentRole]>=2;
+  if(action==='delete')return currentRole==='admin'; // delete patterns: admins only
+  if(action==='edit'){
+    if(ROLE_LEVEL[currentRole]<2)return false;            // viewers: no
+    if(ROLE_LEVEL[currentRole]>=3)return true;            // admin/manager: edit all
+    // editor: only own patterns (no pattern selected = creating, allowed)
+    if(!currentId)return true;
+    const p=patterns.find(x=>x.id===currentId);
+    if(!p)return true;
+    return p.created_by===currentUser?.id;
+  }
   if(action==='pricing')return ROLE_LEVEL[currentRole]>=1;
   return true;
 }
+// Role can create new patterns (independent of which pattern is selected)
+function canCreate(){return !!currentRole&&ROLE_LEVEL[currentRole]>=2;}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function su(s){return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");}
 function toast(msg,type){type=type||'ok';const el=document.getElementById('toast');el.textContent=msg;el.className='toast '+type;el.classList.add('show');clearTimeout(el._t);el._t=setTimeout(()=>el.classList.remove('show'),2800);}
@@ -633,7 +644,8 @@ async function onAuthSuccess(user){
   document.getElementById('user-bar-name').textContent=profile.full_name||profile.email;
   document.getElementById('user-bar-role').textContent=currentRole;
   if(can('manage_users'))document.getElementById('users-btn').style.display='';
-  const ab=document.querySelector('.btn-add-pat');if(ab)ab.style.display=can('edit')?'':'none';
+  const ab=document.querySelector('.btn-add-pat');if(ab)ab.style.display=canCreate()?'':'none';
+  await loadUserMap();
   await loadAll();document.getElementById('loading-overlay').style.display='none';
 }
 async function openUsersModal(){if(!can('manage_users')){toast('Permission denied','err');return;}document.getElementById('users-modal').style.display='flex';await loadUsersList();}
@@ -684,6 +696,11 @@ async function init(){
     });
   }catch(e){document.getElementById('loading-overlay').style.display='none';showLoginScreen();}
 }
+async function loadUserMap(){
+  const {data}=await supa.from('user_profiles').select('id,full_name,email');
+  userMap={};(data||[]).forEach(u=>{userMap[u.id]=u.full_name||u.email;});
+}
+function creatorName(id){return id?(userMap[id]||'Unknown'):'Unknown';}
 async function loadAll(){
   const {data:pats,error}=await supa.from('patterns').select('*').order('brand').order('model').order('years');
   if(error){return;}
@@ -802,6 +819,8 @@ async function acquireLock(patternId){
   if(!currentRole||ROLE_LEVEL[currentRole]<2||!currentUser){viewOnlyMode=true;return;}
   const p=patterns.find(x=>x.id===patternId);
   if(!p){viewOnlyMode=true;return;}
+  // Editors can only lock/edit patterns they created; others view-only (no lock attempt)
+  if(ROLE_LEVEL[currentRole]===2&&p.created_by!==currentUser.id){viewOnlyMode=true;return;}
   // If locked by another user (fresh, not stale), enter view-only mode
   if(isLockedByOther(p)){
     viewOnlyMode=true;
@@ -886,6 +905,7 @@ function renderPattern(){
   ];
   let html=`<div class="pat-hdr"><div class="pat-title-block">
     <div class="pat-title" id="pat-title-display">${esc(p.brand)} ${esc(p.model)} ${esc(p.years)}${p.trim?' '+esc(p.trim):''}</div>
+    <div style="font-size:12px;color:var(--text3);margin-top:2px">Created by ${esc(creatorName(p.created_by))}</div>
     <div class="pat-edit-row" id="pat-edit-row" style="display:none">
       <div class="pef"><div class="pef-label">Years</div><input class="pef-input" id="edit-years" value="${esc(p.years)}" oninput="markDirty()"></div>
       <div class="pef"><div class="pef-label">Brand</div><input class="pef-input" id="edit-brand" value="${esc(p.brand)}" list="brand-dl" oninput="markDirty()"></div>
@@ -902,7 +922,7 @@ function renderPattern(){
   initEditorImgResize();
   if(activeTab==='research')setTimeout(initResearchTextareas,50);
   if(!can('edit')){
-    document.querySelectorAll('.btn-add-other,.var-btn,.tog-btn,.ch-toggle,.btn-add-pat').forEach(el=>{el.disabled=true;el.style.opacity='0.4';el.style.cursor='not-allowed';});
+    document.querySelectorAll('.btn-add-other,.var-btn,.tog-btn,.ch-toggle').forEach(el=>{el.disabled=true;el.style.opacity='0.4';el.style.cursor='not-allowed';});
     document.querySelectorAll('.rich-editor').forEach(el=>el.setAttribute('contenteditable','false'));
     document.querySelectorAll('.color-name-edit,.color-code-edit,.color-years-edit,.color-note,.sub-name,.sub-years,.other-var-input,.notes-textarea,.pef-input').forEach(el=>{el.disabled=true;el.style.background='transparent';});
     document.querySelectorAll('#edit-toggle-btn').forEach(el=>{el.style.display='none';});
@@ -1583,7 +1603,7 @@ async function addPattern(){
   if(!brand||!model||!years){alert('Brand, Model and Years are required.');return;}
   const btn=document.getElementById('add-confirm-btn');btn.disabled=true;btn.textContent='Adding...';
   const defPos={front_bottom:false,front_top:false,rear_bottom:false,rear_top:false};
-  const {data,error}=await supa.from('patterns').insert({brand,model,years,trim,research:'',notes:'',submodels:[],materials:[],materials_oem:[],positions:defPos,other_positions:[],channels:{},pricing:{}}).select().single();
+  const {data,error}=await supa.from('patterns').insert({brand,model,years,trim,research:'',notes:'',submodels:[],materials:[],materials_oem:[],positions:defPos,other_positions:[],channels:{},pricing:{},created_by:currentUser.id}).select().single();
   btn.disabled=false;btn.textContent='Add Pattern';
   if(error){toast('Error: '+error.message,'err');return;}
   const full={...data,colors:[],pdfs:[],photos:[],fits:[],submodels:[],materials:[],materials_oem:[],positions:defPos,other_positions:[],channels:{},pricing:{}};
