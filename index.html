@@ -512,6 +512,7 @@ input[type=color]{width:100%;height:40px;border-radius:var(--radius);border:1px 
   <div class="confirm-box"><div class="confirm-title" id="confirm-title">Are you sure?</div><div class="confirm-msg" id="confirm-msg"></div><div class="confirm-actions"><button class="btn btn-ghost btn-sm" onclick="closeConfirm()">Cancel</button><button class="btn btn-danger btn-sm" id="confirm-ok-btn">Confirm</button></div></div>
 </div>
 <input type="file" id="photo-file" style="display:none" accept="image/*" multiple onchange="handlePhotoFiles(event)">
+<input type="file" id="pdf-file" style="display:none" accept="application/pdf,.pdf" multiple onchange="handlePdfFiles(event)">
 <input type="file" id="research-img-file" style="display:none" accept="image/*" onchange="handleResearchImg(event)">
 <div class="toast" id="toast"></div>
 <script>
@@ -1272,7 +1273,7 @@ function renderResearchTab(p){
   // DOCUMENTS / PDFs
   var pdfHtml='<div class="sec" style="margin-bottom:16px">';
   pdfHtml+='<div class="sec-hdr"><span class="sec-title">&#128196; Documents</span>';
-  if(canEdit)pdfHtml+='<button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="openPdfInput()">+ Add PDF</button>';
+  if(canEdit)pdfHtml+='<button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="triggerPdfUpload()">+ Add PDFs</button>';
   pdfHtml+='</div><div class="sec-body">';
   if(p.pdfs.length){
     p.pdfs.forEach(function(f){
@@ -1287,8 +1288,8 @@ function renderResearchTab(p){
     pdfHtml+='<div style="color:var(--text3);font-size:14px;padding:8px 0">No documents yet.</div>';
   }
   if(canEdit){
-    pdfHtml+='<div class="photo-drop-zone" style="margin-top:10px" id="pdf-drop" ondragover="onDragOver(event,\'pdf-drop\')" ondragleave="onDragLeave(\'pdf-drop\')" ondrop="onPdfDrop(event)" onclick="openPdfInput()">';
-    pdfHtml+='<div class="drop-ico">&#128196;</div><div class="drop-txt">Drag &amp; drop PDF or click to add</div><div class="drop-sub">Enter a name and the file will be uploaded</div></div>';
+    pdfHtml+='<div class="photo-drop-zone" style="margin-top:10px" id="pdf-drop" ondragover="onDragOver(event,\'pdf-drop\')" ondragleave="onDragLeave(\'pdf-drop\')" ondrop="onPdfDrop(event)" onclick="triggerPdfUpload()">';
+    pdfHtml+='<div class="drop-ico">&#128196;</div><div class="drop-txt">Drag &amp; drop PDFs or click to add</div><div class="drop-sub">Select or drop multiple files — named from the filename</div></div>';
   }
   pdfHtml+='</div></div>';
 
@@ -1423,20 +1424,35 @@ async function moveResImg(idx,dir){
   toast('Reordered \u2713');
 }
 async function onResearchImgDrop(e){e.preventDefault();const files=Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/'));if(files.length)await uploadPhotos(files,'research');}
+function triggerPdfUpload(){if(!can('edit')){toast('View-only access','err');return;}document.getElementById('pdf-file').click();}
+function handlePdfFiles(e){const files=Array.from(e.target.files);e.target.value='';uploadPdfs(files.filter(f=>f.type==='application/pdf'||/\.pdf$/i.test(f.name)));}
 async function onPdfDrop(e){
   e.preventDefault();
   document.getElementById('pdf-drop')?.classList.remove('dragover');
-  const file=Array.from(e.dataTransfer.files).find(f=>f.type==='application/pdf'||f.name.endsWith('.pdf'));
-  if(!file){toast('Please drop a PDF file','err');return;}
-  const name=prompt('Label for this PDF:',file.name.replace(/\.pdf$/i,''));
-  if(!name)return;
-  toast('Uploading PDF...');
-  const p=getP();
-  const path='pdfs/'+Date.now()+'-'+Math.random().toString(36).slice(2)+'.pdf';
-  const {data:uploadData,error:uploadErr}=await supa.storage.from('pattern-photos').upload(path,file,{upsert:false,contentType:'application/pdf'});
-  if(uploadErr){toast('Upload error: '+uploadErr.message,'err');return;}
-  const {data:{publicUrl}}=supa.storage.from('pattern-photos').getPublicUrl(path);
-  await savePdf(name.trim(),publicUrl);
+  const files=Array.from(e.dataTransfer.files).filter(f=>f.type==='application/pdf'||/\.pdf$/i.test(f.name));
+  if(!files.length){toast('Please drop PDF files','err');return;}
+  await uploadPdfs(files);
+}
+// Bulk upload: one storage object + one document row per file, named from the filename
+async function uploadPdfs(files){
+  if(!files||!files.length)return;
+  if(!can('edit')){toast('View-only access','err');return;}
+  const p=getP();if(!p)return;
+  toast('Uploading '+files.length+' file'+(files.length>1?'s':'')+'...');
+  let ok=0,fail=0;
+  for(const file of files){
+    const path='pdfs/'+Date.now()+'-'+Math.random().toString(36).slice(2)+'.pdf';
+    const {error:uploadErr}=await supa.storage.from('pattern-photos').upload(path,file,{upsert:false,contentType:'application/pdf'});
+    if(uploadErr){fail++;continue;}
+    const {data:{publicUrl}}=supa.storage.from('pattern-photos').getPublicUrl(path);
+    const name=file.name.replace(/\.pdf$/i,'');
+    const {error}=await supa.from('pattern_pdfs').insert({pattern_id:p.id,name,url:publicUrl});
+    if(error){fail++;}else{ok++;}
+  }
+  const {data:freshPdfs}=await supa.from('pattern_pdfs').select('*').eq('pattern_id',p.id).order('created_at');
+  if(freshPdfs)p.pdfs=freshPdfs;
+  renderPattern();
+  toast(ok+' document'+(ok!==1?'s':'')+' added'+(fail?(' — '+fail+' failed'):' ✓'),fail?'err':'ok');
 }
 async function updateResearchPhotoCaption(id,val){const p=getP();if(!p)return;const ph=p.photos.find(x=>x.id===id);if(ph)ph.caption=val;}
 function autoResizeTA(ta){ta.style.height='auto';ta.style.height=ta.scrollHeight+'px';}
