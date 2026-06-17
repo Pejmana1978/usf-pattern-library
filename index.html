@@ -6,6 +6,8 @@
 <title>USF Pattern Database</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -1645,7 +1647,109 @@ async function doDelete(){
   toast('Deleted');
 }
 // ── EXPORT RESEARCH PDF ───────────────────────────────────
-function exportResearchPdf(){
+// Primary: build a true text PDF (selectable/searchable) with pdfmake.
+// Falls back to the print-window method if pdfmake isn't available or errors.
+async function exportResearchPdf(){
+  const p=getP();if(!p){toast('No pattern selected','err');return;}
+  if(typeof pdfMake==='undefined'){return exportResearchPdfPrint();}
+  try{
+    await exportResearchPdfText(p);
+  }catch(err){
+    console.error('Text PDF failed, falling back to print:',err);
+    toast('Falling back to print export…','err');
+    exportResearchPdfPrint();
+  }
+}
+// Fetch an image URL and return a PNG/JPEG data URL (pdfmake can't embed webp).
+function imgToDataUrl(url){
+  return new Promise(function(resolve){
+    const img=new Image();img.crossOrigin='anonymous';
+    img.onload=function(){
+      try{
+        const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;
+        c.getContext('2d').drawImage(img,0,0);
+        resolve({dataUrl:c.toDataURL('image/jpeg',0.85),w:img.naturalWidth,h:img.naturalHeight});
+      }catch(e){resolve(null);}
+    };
+    img.onerror=function(){resolve(null);};
+    img.src=url;
+  });
+}
+async function exportResearchPdfText(p){
+  toast('Building PDF…');
+  const researchPhotos=(p.photos||[]).filter(function(ph){return ph.type==='research';}).slice()
+    .sort(function(a,b){const sa=(a.sort_order!=null?a.sort_order:9999),sb=(b.sort_order!=null?b.sort_order:9999);return sa!==sb?sa-sb:new Date(a.created_at)-new Date(b.created_at);});
+  const mats=p.materials||[],oemList=p.materials_oem||[],subs=p.submodels||[];
+  const title=[p.brand,p.model,p.years].filter(Boolean).join(' ')+(p.trim?' · '+p.trim:'');
+  const content=[];
+  content.push({text:title+' — Research',style:'h1'});
+  content.push({text:'Generated '+new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}),style:'meta'});
+
+  content.push({text:'Pattern info',style:'sec'});
+  const infoRows=[['Brand',p.brand||''],['Model',p.model||''],['Years',p.years||'']];
+  if(p.trim)infoRows.push(['Trim',p.trim]);
+  content.push({table:{widths:[70,'*'],body:infoRows.map(function(r){return [{text:r[0],style:'lbl'},{text:r[1]}];})},layout:'noBorders',margin:[0,0,0,10]});
+
+  if(mats.length){
+    content.push({text:'Materials',style:'sec'});
+    content.push({text:mats.map(function(m){return m+(oemList.indexOf(m)>-1?' (OEM)':'');}).join('   •   '),margin:[0,0,0,10]});
+  }
+  const variationLabels=[];
+  (typeof VAR_GROUPS!=='undefined'?VAR_GROUPS:[]).forEach(function(g){g.btns.forEach(function(b){if(p.positions&&p.positions[b.id])variationLabels.push(g.label+' '+b.label);});});
+  (p.other_positions||[]).forEach(function(op){if(op.active&&op.label&&op.label.trim())variationLabels.push(op.label.trim());});
+  if(variationLabels.length){
+    content.push({text:'Variations',style:'sec'});
+    content.push({text:variationLabels.join('   •   '),margin:[0,0,0,10]});
+  }
+  if((p.colors||[]).length){
+    const sorted=[...p.colors].sort(function(a,b){return (a.name||'').localeCompare(b.name||'');});
+    content.push({text:'Colors ('+sorted.length+')',style:'sec'});
+    const body=[[{text:'Color name',style:'th'},{text:'Trim code',style:'th'},{text:'Year note',style:'th'},{text:'Material exception',style:'th'}]];
+    sorted.forEach(function(c){body.push([{text:c.name||'',bold:true},{text:c.code||'—'},{text:c.year_note||'All years'},{text:c.note||''}]);});
+    content.push({table:{headerRows:1,widths:['*','auto','auto','*'],body:body},layout:'lightHorizontalLines',margin:[0,0,0,10],fontSize:10});
+  }
+  if(subs.length){
+    content.push({text:'Submodels / Trims',style:'sec'});
+    subs.forEach(function(s){const name=typeof s==='string'?s:(s.name||'');const years=typeof s==='string'?'All years':(s.years||'All years');if(!name)return;content.push({columns:[{text:name,bold:true,width:180},{text:years,color:'#888'}],margin:[0,0,0,2]});});
+    content.push({text:'',margin:[0,0,0,8]});
+  }
+  if(researchPhotos.length){
+    content.push({text:'Reference images ('+researchPhotos.length+')',style:'sec'});
+    const imgs=await Promise.all(researchPhotos.map(function(ph){return imgToDataUrl(ph.url).then(function(d){return {d:d,caption:ph.caption||''};});}));
+    for(var i=0;i<imgs.length;i+=2){
+      const pair=[imgs[i],imgs[i+1]];
+      const cols=pair.map(function(it){
+        if(!it)return {text:'',width:'*'};
+        const stack=[];
+        if(it.d)stack.push({image:it.d.dataUrl,width:245});
+        else stack.push({text:'[image unavailable]',color:'#999',italics:true});
+        if(it.caption&&it.caption.trim())stack.push({text:it.caption,fontSize:9,color:'#555',margin:[0,4,0,0]});
+        return {stack:stack,width:'*'};
+      });
+      content.push({columns:cols,columnGap:14,margin:[0,0,0,12]});
+    }
+  }
+  if((p.research||'').trim()){
+    content.push({text:'Research notes',style:'sec'});
+    content.push({text:p.research,margin:[0,0,0,4],lineHeight:1.4});
+  }
+  const docDef={
+    pageMargins:[40,40,40,40],
+    content:content,
+    defaultStyle:{fontSize:11,color:'#1a1a1a'},
+    styles:{
+      h1:{fontSize:18,bold:true,margin:[0,0,0,2]},
+      meta:{fontSize:10,color:'#666',margin:[0,0,0,14]},
+      sec:{fontSize:11,bold:true,color:'#555',margin:[0,8,0,6]},
+      lbl:{color:'#999',bold:true},
+      th:{bold:true,fontSize:9,color:'#666',fillColor:'#f6f5f2'}
+    }
+  };
+  const fname=[p.brand,p.model,p.years].filter(Boolean).join('_').replace(/[^A-Za-z0-9_]+/g,'_')+'_research.pdf';
+  pdfMake.createPdf(docDef).download(fname);
+  toast('PDF downloaded ✓');
+}
+function exportResearchPdfPrint(){
   const p=getP();if(!p){toast('No pattern selected','err');return;}
 
   function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
