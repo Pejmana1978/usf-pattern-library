@@ -1598,9 +1598,16 @@ async function saveAll(){
 function openAddModal(){document.getElementById('add-modal').style.display='flex';}
 function closeAddModal(){document.getElementById('add-modal').style.display='none';}
 async function addPattern(){
-  if(!can('edit')){toast('Permission denied','err');return;}
+  if(!canCreate()){toast('Permission denied','err');return;}
   const brand=document.getElementById('nm-brand').value.trim(),model=document.getElementById('nm-model').value.trim(),years=document.getElementById('nm-years').value.trim(),trim=document.getElementById('nm-trim').value.trim();
   if(!brand||!model||!years){alert('Brand, Model and Years are required.');return;}
+  // Duplicate warning — same brand + model + years already exists
+  const norm=s=>String(s||'').trim().toLowerCase();
+  const dup=patterns.find(p=>norm(p.brand)===norm(brand)&&norm(p.model)===norm(model)&&norm(p.years)===norm(years));
+  if(dup){
+    const who=dup.created_by?(' (created by '+creatorName(dup.created_by)+')'):'';
+    if(!confirm('A report already exists for '+brand+' '+model+' '+years+who+'.\n\nAdd a duplicate anyway?'))return;
+  }
   const btn=document.getElementById('add-confirm-btn');btn.disabled=true;btn.textContent='Adding...';
   const defPos={front_bottom:false,front_top:false,rear_bottom:false,rear_top:false};
   const {data,error}=await supa.from('patterns').insert({brand,model,years,trim,research:'',notes:'',submodels:[],materials:[],materials_oem:[],positions:defPos,other_positions:[],channels:{},pricing:{},created_by:currentUser.id}).select().single();
